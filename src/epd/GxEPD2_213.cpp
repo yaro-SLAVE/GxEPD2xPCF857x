@@ -12,8 +12,8 @@
 
 #include "GxEPD2_213.h"
 
-GxEPD2_213::GxEPD2_213(int16_t cs, int16_t dc, int16_t rst, int16_t busy, Adafruit_PCF8574* pcf_device) :
-  GxEPD2_EPD(cs, dc, rst, busy, pcf_device, HIGH, 10000000, WIDTH, HEIGHT, panel, hasColor, hasPartialUpdate, hasFastPartialUpdate)
+GxEPD2_213::GxEPD2_213(int16_t cs, int16_t dc, int16_t rst, int16_t busy) :
+  GxEPD2_EPD(cs, dc, rst, busy, HIGH, 10000000, WIDTH, HEIGHT, panel, hasColor, hasPartialUpdate, hasFastPartialUpdate)
 {
 }
 

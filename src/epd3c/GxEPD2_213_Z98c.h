@@ -32,7 +32,7 @@ class GxEPD2_213_Z98c : public GxEPD2_EPD
     static const uint16_t full_refresh_time = 15000; // ms, e.g. 14589155us
     static const uint16_t partial_refresh_time = 15000; // ms, e.g. 14589155us
     // constructor
-    GxEPD2_213_Z98c(int16_t cs, int16_t dc, int16_t rst, int16_t busy, Adafruit_PCF8574* pcf_device);
+    GxEPD2_213_Z98c(int16_t cs, int16_t dc, int16_t rst, int16_t busy);
     // methods (virtual)
     //  Support for Bitmaps (Sprites) to Controller Buffer and to Screen
     void clearScreen(uint8_t value = 0xFF); // init controller memory and screen (default white)

@@ -13,8 +13,8 @@
 
 #include "GxEPD2_213_Z98c.h"
 
-GxEPD2_213_Z98c::GxEPD2_213_Z98c(int16_t cs, int16_t dc, int16_t rst, int16_t busy, Adafruit_PCF8574* pcf_device) :
-  GxEPD2_EPD(cs, dc, rst, busy, pcf_device, HIGH, 30000000, WIDTH, HEIGHT, panel, hasColor, hasPartialUpdate, hasFastPartialUpdate)
+GxEPD2_213_Z98c::GxEPD2_213_Z98c(int16_t cs, int16_t dc, int16_t rst, int16_t busy) :
+  GxEPD2_EPD(cs, dc, rst, busy, HIGH, 30000000, WIDTH, HEIGHT, panel, hasColor, hasPartialUpdate, hasFastPartialUpdate)
 {
 }
 
@@ -48,21 +48,67 @@ void GxEPD2_213_Z98c::writeScreenBuffer(uint8_t value)
 
 void GxEPD2_213_Z98c::writeScreenBuffer(uint8_t black_value, uint8_t color_value)
 {
-  _initial_write = false; // initial full screen buffer clean done
+  _initial_write = false;
   _Init_Part();
   _setPartialRamArea(0, 0, WIDTH, HEIGHT);
   Serial.println("3.11");
+  
+  // Временно отключаем WDT для этой операции
+  ESP.wdtDisable();
+  
+  // Используем более быстрый метод записи - буферизированную передачу
   _writeCommand(0x24);
-  for (uint32_t i = 0; i < uint32_t(WIDTH) * uint32_t(HEIGHT) / 8; i++)
-  {
-    _writeData(black_value);
+  _startTransfer();
+  
+  uint32_t total_bytes = uint32_t(WIDTH) * uint32_t(HEIGHT) / 8;
+  const uint16_t CHUNK_SIZE = 512; // Большие чанки для скорости
+  
+  for (uint32_t i = 0; i < total_bytes; i += CHUNK_SIZE) {
+    uint32_t chunk_end = min(i + CHUNK_SIZE, total_bytes);
+    
+    for (uint32_t j = i; j < chunk_end; j++) {
+      _transfer(black_value);
+    }
+    
+    // Периодически сбрасываем и возобновляем передачу для yield
+    if (i + CHUNK_SIZE < total_bytes) {
+      _endTransfer();
+      delay(1); // Короткая пауза
+      _startTransfer();
+    }
   }
+  _endTransfer();
+  
+  // Кратко включаем WDT между операциями
+  ESP.wdtEnable(1000);
+  ESP.wdtFeed();
+  delay(1);
+  
+  // Отключаем снова для второй операции
+  ESP.wdtDisable();
+  
   _writeCommand(0x26);
-  for (uint32_t i = 0; i < uint32_t(WIDTH) * uint32_t(HEIGHT) / 8; i++)
-  {
-    _writeData(~color_value);
+  _startTransfer();
+  
+  for (uint32_t i = 0; i < total_bytes; i += CHUNK_SIZE) {
+    uint32_t chunk_end = min(i + CHUNK_SIZE, total_bytes);
+    
+    for (uint32_t j = i; j < chunk_end; j++) {
+      _transfer(~color_value);
+    }
+    
+    if (i + CHUNK_SIZE < total_bytes) {
+      _endTransfer();
+      delay(1);
+      _startTransfer();
+    }
   }
-
+  _endTransfer();
+  
+  // Восстанавливаем нормальный WDT
+  ESP.wdtEnable(5000);
+  ESP.wdtFeed();
+  
   Serial.println("3.19");
 }
 
@@ -74,8 +120,15 @@ void GxEPD2_213_Z98c::writeImage(const uint8_t bitmap[], int16_t x, int16_t y, i
 void GxEPD2_213_Z98c::writeImage(const uint8_t* black, const uint8_t* color, int16_t x, int16_t y, int16_t w, int16_t h, bool invert, bool mirror_y, bool pgm)
 {
   Serial.println("3.1");
-  if (_initial_write) writeScreenBuffer(); // initial full screen buffer clean
-  delay(1); // yield() to avoid WDT on ESP8266 and ESP32
+  
+  if (_initial_write) {
+    Serial.println("3.1a - calling writeScreenBuffer");
+    writeScreenBuffer(); // initial full screen buffer clean
+  }
+  
+  ESP.wdtFeed();
+  delay(1);
+  
   int16_t wb = (w + 7) / 8; // width bytes, bitmaps are padded
   x -= x % 8; // byte boundary
   w = wb * 8; // byte boundary
@@ -91,12 +144,14 @@ void GxEPD2_213_Z98c::writeImage(const uint8_t* black, const uint8_t* color, int
   Serial.println("3.2");
 
   if ((w1 <= 0) || (h1 <= 0)) return;
+  
   _Init_Part();
   _setPartialRamArea(x1, y1, w1, h1);
   _writeCommand(0x24);
 
   Serial.println("3.3");
 
+  // Первый цикл - черные данные с частыми yield
   for (int16_t i = 0; i < h1; i++)
   {
     for (int16_t j = 0; j < w1 / 8; j++)
@@ -104,7 +159,6 @@ void GxEPD2_213_Z98c::writeImage(const uint8_t* black, const uint8_t* color, int
       uint8_t data = 0xFF;
       if (black)
       {
-        // use wb, h of bitmap for index!
         int16_t idx = mirror_y ? j + dx / 8 + ((h - 1 - (i + dy))) * wb : j + dx / 8 + (i + dy) * wb;
         if (pgm)
         {
@@ -122,11 +176,20 @@ void GxEPD2_213_Z98c::writeImage(const uint8_t* black, const uint8_t* color, int
       }
       _writeData(data);
     }
+    
+    // Yield после каждой строки
+    if (i % 2 == 0) { // Каждые 2 строки
+      ESP.wdtFeed();
+      delay(1);
+    }
   }
 
   Serial.println("3.4");
+  ESP.wdtFeed();
 
   _writeCommand(0x26);
+  
+  // Второй цикл - цветные данные с частыми yield
   for (int16_t i = 0; i < h1; i++)
   {
     for (int16_t j = 0; j < w1 / 8; j++)
@@ -134,7 +197,6 @@ void GxEPD2_213_Z98c::writeImage(const uint8_t* black, const uint8_t* color, int
       uint8_t data = 0xFF;
       if (color)
       {
-        // use wb, h of bitmap for index!
         int16_t idx = mirror_y ? j + dx / 8 + ((h - 1 - (i + dy))) * wb : j + dx / 8 + (i + dy) * wb;
         if (pgm)
         {
@@ -152,8 +214,15 @@ void GxEPD2_213_Z98c::writeImage(const uint8_t* black, const uint8_t* color, int
       }
       _writeData(~data);
     }
+    
+    // Yield после каждой строки
+    if (i % 2 == 0) { // Каждые 2 строки
+      ESP.wdtFeed();
+      delay(1);
+    }
   }
-  delay(1); // yield() to avoid WDT on ESP8266 and ESP32
+  
+  ESP.wdtFeed();
   Serial.println("3.9");
 }
 
@@ -290,7 +359,7 @@ void GxEPD2_213_Z98c::refresh(bool partial_update_mode)
 
 void GxEPD2_213_Z98c::refresh(int16_t x, int16_t y, int16_t w, int16_t h)
 {
-  Serial.println("4.1");
+ 
   // intersection with screen
   int16_t w1 = x < 0 ? w + x : w; // reduce
   int16_t h1 = y < 0 ? h + y : h; // reduce
@@ -303,13 +372,14 @@ void GxEPD2_213_Z98c::refresh(int16_t x, int16_t y, int16_t w, int16_t h)
   w1 += x1 % 8;
   if (w1 % 8 > 0) w1 += 8 - w1 % 8;
   x1 -= x1 % 8;
-  Serial.println("4.2");
+
   _Init_Part();
-  Serial.println("4.3");
+  
+
   _setPartialRamArea(x1, y1, w1, h1);
-  Serial.println("4.4");
+  
+  // Временно увеличиваем timeout WDT для обновления дисплея
   _Update_Part();
-  Serial.println("4.5");
 }
 
 void GxEPD2_213_Z98c::powerOff()
@@ -403,18 +473,45 @@ void GxEPD2_213_Z98c::_Init_Part()
 
 void GxEPD2_213_Z98c::_Update_Full()
 {
+  Serial.println("_Update_Full: starting");
+  
   _writeCommand(0x22);
   _writeData(0xf7);
   _writeCommand(0x20);
-  _waitWhileBusy("_Update_Full", full_refresh_time);
+  
+  // Для этого дисплея используем фиксированную задержку вместо BUSY пина
+  Serial.println("_Update_Full: waiting 20 seconds for display update...");
+  
+  unsigned long start = millis();
+  while (millis() - start < 20000) {
+    delay(1000);
+    unsigned long elapsed = (millis() - start) / 1000;
+    Serial.printf("Update progress: %lu/20 seconds\n", elapsed);
+      delay(0);
+  }
+  
+  Serial.println("_Update_Full: completed");
   _power_is_on = false;
 }
 
 void GxEPD2_213_Z98c::_Update_Part()
 {
+  Serial.println("_Update_Part: starting");
+  
   _writeCommand(0x22);
   _writeData(0xf7);
   _writeCommand(0x20);
-  _waitWhileBusy("_Update_Part", partial_refresh_time);
+  
+  // Для этого дисплея используем фиксированную задержку вместо BUSY пина
+  Serial.println("_Update_Part: waiting 15 seconds for display update...");
+  
+  unsigned long start = millis();
+  while (millis() - start < 30000) {
+    delay(1000);
+    unsigned long elapsed = (millis() - start) / 1000;
+    Serial.printf("Update progress: %lu/15 seconds\n", elapsed);
+  }
+  
+  Serial.println("_Update_Part: completed");
   _power_is_on = false;
 }
